@@ -140,6 +140,12 @@ For python-based LazyConfig, use "path.key=value".
         default=None,
         nargs=argparse.REMAINDER,
     )
+    # oob
+    parser.add_argument('--device', choices=["cpu", "cuda", "xpu"], default="cpu", type=str)
+    parser.add_argument("--num_warmup", "--warmup_iter", type=int, default=20, help="The number warmup, default is 20.")
+    parser.add_argument("--num_iters", "--early_stop_at_iter",type=int, default=200, help="The number iters of benchmark, default is 200.")
+    parser.add_argument('--precision', choices=["float32", "float16", "bfloat16"], default='float32', help='Precision')
+
     return parser
 
 
