@@ -114,7 +114,7 @@ Run on multiple machines:
         "See documentation of `DefaultTrainer.resume_or_load()` for what it means.",
     )
     parser.add_argument("--eval-only", action="store_true", help="perform evaluation only")
-    parser.add_argument("--num-gpus", type=int, default=1, help="number of gpus *per machine*")
+    parser.add_argument("--num-gpus", type=int, default=0, help="number of gpus *per machine*")
     parser.add_argument("--num-machines", type=int, default=1, help="total number of machines")
     parser.add_argument(
         "--machine-rank", type=int, default=0, help="the rank of this machine (unique per machine)"
@@ -143,8 +143,13 @@ For python-based LazyConfig, use "path.key=value".
     # oob
     parser.add_argument('--device', choices=["cpu", "cuda", "xpu"], default="cpu", type=str)
     parser.add_argument("--num_warmup", "--warmup_iter", type=int, default=20, help="The number warmup, default is 20.")
-    parser.add_argument("--num_iters", "--early_stop_at_iter",type=int, default=200, help="The number iters of benchmark, default is 200.")
+    parser.add_argument("--num_iter", "--early_stop_at_iter",type=int, default=200, help="The number iters of benchmark, default is 200.")
     parser.add_argument('--precision', choices=["float32", "float16", "bfloat16"], default='float32', help='Precision')
+    parser.add_argument('--batch_size', default=1, type=int, help='batch size')
+    parser.add_argument('--channels_last', default=1, type=int, help='Use NHWC or not')
+    parser.add_argument('--jit', action='store_true', default=False, help='enable JIT')
+    parser.add_argument('--nv_fuser', action='store_true', default=False, help='enable nvFuser')
+    parser.add_argument('--profile', action='store_true', default=False, help='collect timeline')
 
     return parser
 
@@ -580,7 +585,7 @@ Alternatively, you can call evaluation functions yourself (see Colab balloon tut
         )
 
     @classmethod
-    def test(cls, cfg, model, evaluators=None):
+    def test(cls, cfg, args, model, evaluators=None):
         """
         Evaluate the given model. The given model is expected to already contain
         weights to evaluate.
@@ -620,7 +625,26 @@ Alternatively, you can call evaluation functions yourself (see Colab balloon tut
                     )
                     results[dataset_name] = {}
                     continue
-            results_i = inference_on_dataset(model, data_loader, evaluator)
+            with torch.inference_mode():
+                if args.precision == "float16" and args.device == "cuda":
+                    print("---- Use autocast fp16 cuda")
+                    with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+                        results_i = inference_on_dataset(cfg, args, model, data_loader, evaluator)
+                elif args.precision == "float16" and args.device == "xpu":
+                    print("---- Use autocast fp16 xpu")
+                    with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16, cache_enabled=True):
+                        results_i = inference_on_dataset(cfg, args, model, data_loader, evaluator)
+                elif args.precision == "bfloat16" and args.device == "cpu":
+                    print("---- Use autocast bf16 cpu")
+                    with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                        results_i = inference_on_dataset(cfg, args, model, data_loader, evaluator)
+                elif args.precision == "bfloat16" and args.device == "xpu":
+                    print("---- Use autocast bf16 xpu")
+                    with torch.xpu.amp.autocast(dtype=torch.bfloat16):
+                        results_i = inference_on_dataset(cfg, args, model, data_loader, evaluator)
+                else:
+                    print("---- no autocast")
+                    results_i = inference_on_dataset(cfg, args, model, data_loader, evaluator)
             results[dataset_name] = results_i
             if comm.is_main_process():
                 assert isinstance(

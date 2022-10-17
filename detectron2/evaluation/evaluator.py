@@ -101,7 +101,7 @@ class DatasetEvaluators(DatasetEvaluator):
 
 
 def inference_on_dataset(
-    model, data_loader, evaluator: Union[DatasetEvaluator, List[DatasetEvaluator], None]
+    cfg, args, model, data_loader, evaluator: Union[DatasetEvaluator, List[DatasetEvaluator], None]
 ):
     """
     Run model on the data_loader and evaluate the metrics with evaluator.
@@ -135,77 +135,191 @@ def inference_on_dataset(
         evaluator = DatasetEvaluators(evaluator)
     evaluator.reset()
 
-    num_warmup = min(5, total - 1)
-    start_time = time.perf_counter()
-    total_data_time = 0
-    total_compute_time = 0
-    total_eval_time = 0
-    with ExitStack() as stack:
-        if isinstance(model, nn.Module):
-            stack.enter_context(inference_context(model))
-        stack.enter_context(torch.no_grad())
+    if args.channels_last:
+        model = model.to(memory_format=torch.channels_last)
+        print("---- Use NHWC format")
+    if args.nv_fuser:
+        fuser_mode = "fuser2"
+    else:
+       fuser_mode = "none"
+    print("---- fuser mode:", fuser_mode)
 
-        start_data_time = time.perf_counter()
-        for idx, inputs in enumerate(data_loader):
-            total_data_time += time.perf_counter() - start_data_time
-            if idx == num_warmup:
-                start_time = time.perf_counter()
-                total_data_time = 0
-                total_compute_time = 0
-                total_eval_time = 0
+    total_time = 0.0
+    total_sample = 0
 
-            start_compute_time = time.perf_counter()
-            outputs = model(inputs)
-            if torch.cuda.is_available():
+    if args.profile and args.device == "xpu":
+        with ExitStack() as stack:
+            if isinstance(model, nn.Module):
+                stack.enter_context(inference_context(model))
+            stack.enter_context(torch.no_grad())
+
+            profile_len = len(data_loader) // 2
+            for i, inputs in enumerate(data_loader):
+                if i > args.num_iter:
+                    break
+                if args.jit and i == 0:
+                    try:
+                        model = torch.jit.trace(model, inputs, check_trace=False)
+                        print("---- JIT trace enable.")
+                    except (RuntimeError, TypeError) as e:
+                        print("---- JIT trace disable.")
+                        print("failed to use PyTorch jit mode due to: ", e)
+
+                with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
+                    start_time = time.time()
+                    outputs = model(inputs)
+                    torch.xpu.synchronize()
+                    elapsed = time.time() - start_time
+                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+                if i >= args.num_warmup:
+                    total_sample += args.batch_size
+                    total_time += elapsed
+                if args.profile and i == profile_len:
+                    import pathlib
+                    timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+                    if not os.path.exists(timeline_dir):
+                        try:
+                            os.makedirs(timeline_dir)
+                        except:
+                            pass
+                    torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
+                        timeline_dir+'profile.pt')
+                    torch.save(prof.key_averages(group_by_input_shape=True).table(),
+                        timeline_dir+'profile_detail.pt')
+                    prof.export_chrome_trace("model_profile.json")
+    elif args.profile and args.device == "cuda":
+        with ExitStack() as stack:
+            if isinstance(model, nn.Module):
+                stack.enter_context(inference_context(model))
+            stack.enter_context(torch.no_grad())
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                record_shapes=True,
+                schedule=torch.profiler.schedule(
+                    wait=profile_len,
+                    warmup=2,
+                    active=1,
+                ),
+                on_trace_ready=trace_handler,
+            ) as p:
+                for i, inputs in enumerate(data_loader):
+                    if i > args.num_iter:
+                        break
+                    if args.jit and i == 0:
+                        try:
+                            model = torch.jit.trace(model, inputs, check_trace=False)
+                            print("---- JIT trace enable.")
+                        except (RuntimeError, TypeError) as e:
+                            print("---- JIT trace disable.")
+                            print("failed to use PyTorch jit mode due to: ", e)
+
+                    start_time = time.time()
+                    with torch.jit.fuser(fuser_mode):
+                        outputs = model(inputs)
+                    torch.cuda.synchronize()
+                    elapsed = time.time() - start_time
+                    p.step()
+                    print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+                    if i >= args.num_warmup:
+                        total_sample += args.batch_size
+                        total_time += elapsed
+    elif args.profile and args.device == "cpu":
+        with ExitStack() as stack:
+            if isinstance(model, nn.Module):
+                stack.enter_context(inference_context(model))
+            stack.enter_context(torch.no_grad())
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU],
+                record_shapes=True,
+                schedule=torch.profiler.schedule(
+                    wait=profile_len,
+                    warmup=2,
+                    active=1,
+                ),
+                on_trace_ready=trace_handler,
+            ) as p:
+                for i, inputs in enumerate(data_loader):
+                    if i > args.num_iter:
+                        break
+                    if args.jit and i == 0:
+                        try:
+                            model = torch.jit.trace(model, inputs, check_trace=False)
+                            print("---- JIT trace enable.")
+                        except (RuntimeError, TypeError) as e:
+                            print("---- JIT trace disable.")
+                            print("failed to use PyTorch jit mode due to: ", e)
+
+                    start_time = time.time()
+                    outputs = model(inputs)
+                    elapsed = time.time() - start_time
+                    p.step()
+                    print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+                    if i >= args.num_warmup:
+                        total_sample += args.batch_size
+                        total_time += elapsed
+    elif not args.profile and args.device == "cuda":
+        with ExitStack() as stack:
+            if isinstance(model, nn.Module):
+                stack.enter_context(inference_context(model))
+            stack.enter_context(torch.no_grad())
+
+            for i, inputs in enumerate(data_loader):
+                if i > args.num_iter:
+                    break
+                if args.jit and i == 0:
+                    try:
+                        model = torch.jit.trace(model, inputs, check_trace=False)
+                        print("---- JIT trace enable.")
+                    except (RuntimeError, TypeError) as e:
+                        print("---- JIT trace disable.")
+                        print("failed to use PyTorch jit mode due to: ", e)
+
+                start_time = time.time()
+                with torch.jit.fuser(fuser_mode):
+                    outputs = model(inputs)
                 torch.cuda.synchronize()
-            total_compute_time += time.perf_counter() - start_compute_time
+                elapsed = time.time() - start_time
+                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+                if i >= args.num_warmup:
+                    total_sample += args.batch_size
+                    total_time += elapsed
+    else:
+        with ExitStack() as stack:
+            if isinstance(model, nn.Module):
+                stack.enter_context(inference_context(model))
+            stack.enter_context(torch.no_grad())
 
-            start_eval_time = time.perf_counter()
-            evaluator.process(inputs, outputs)
-            total_eval_time += time.perf_counter() - start_eval_time
+            for i, inputs in enumerate(data_loader):
+                if i > args.num_iter:
+                    break
+                #if args.channels_last:
+                #    inputs = inputs.to(memory_format=torch.channels_last) if len(inputs.size()) == 4 else inputs
+                if args.jit and i == 0:
+                    try:
+                        model = torch.jit.trace(model, inputs, check_trace=False)
+                        print("---- JIT trace enable.")
+                    except (RuntimeError, TypeError) as e:
+                        print("---- JIT trace disable.")
+                        print("failed to use PyTorch jit mode due to: ", e)
 
-            iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
-            data_seconds_per_iter = total_data_time / iters_after_start
-            compute_seconds_per_iter = total_compute_time / iters_after_start
-            eval_seconds_per_iter = total_eval_time / iters_after_start
-            total_seconds_per_iter = (time.perf_counter() - start_time) / iters_after_start
-            if idx >= num_warmup * 2 or compute_seconds_per_iter > 5:
-                eta = datetime.timedelta(seconds=int(total_seconds_per_iter * (total - idx - 1)))
-                log_every_n_seconds(
-                    logging.INFO,
-                    (
-                        f"Inference done {idx + 1}/{total}. "
-                        f"Dataloading: {data_seconds_per_iter:.4f} s/iter. "
-                        f"Inference: {compute_seconds_per_iter:.4f} s/iter. "
-                        f"Eval: {eval_seconds_per_iter:.4f} s/iter. "
-                        f"Total: {total_seconds_per_iter:.4f} s/iter. "
-                        f"ETA={eta}"
-                    ),
-                    n=5,
-                )
-            start_data_time = time.perf_counter()
+                start_time = time.time()
+                outputs = model(inputs)
+                if args.device == "xpu":
+                    torch.xpu.synchronize()
+                elapsed = time.time() - start_time
+                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+                if i >= args.num_warmup:
+                    total_sample += args.batch_size
+                    total_time += elapsed
 
-    # Measure the time only for this worker (before the synchronization barrier)
-    total_time = time.perf_counter() - start_time
-    total_time_str = str(datetime.timedelta(seconds=total_time))
-    # NOTE this format is parsed by grep
-    logger.info(
-        "Total inference time: {} ({:.6f} s / iter per device, on {} devices)".format(
-            total_time_str, total_time / (total - num_warmup), num_devices
-        )
-    )
-    total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
-    logger.info(
-        "Total inference pure compute time: {} ({:.6f} s / iter per device, on {} devices)".format(
-            total_compute_time_str, total_compute_time / (total - num_warmup), num_devices
-        )
-    )
+    latency = total_time / total_sample * 1000
+    throughput = total_sample / total_time
+    print("inference Latency: {} ms".format(latency))
+    print("inference Throughput: {} samples/s".format(throughput))
 
-    results = evaluator.evaluate()
     # An evaluator may return None when not in main process.
     # Replace it by an empty dict instead to make it easier for downstream code to handle
-    if results is None:
-        results = {}
+    results = {}
     return results
 
 

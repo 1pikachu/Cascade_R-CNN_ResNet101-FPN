@@ -116,6 +116,7 @@ def setup(args):
     cfg = get_cfg()
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    cfg.MODEL.DEVICE = args.device
     cfg.freeze()
     default_setup(cfg, args)
     return cfg
@@ -129,7 +130,7 @@ def main(args):
         DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
             cfg.MODEL.WEIGHTS, resume=args.resume
         )
-        res = Trainer.test(cfg, model)
+        res = Trainer.test(cfg, args, model)
         if cfg.TEST.AUG.ENABLED:
             res.update(Trainer.test_with_TTA(cfg, model))
         if comm.is_main_process():
@@ -153,9 +154,17 @@ def main(args):
 if __name__ == "__main__":
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
+
+    if args.device == "xpu":
+        import intel_extension_for_pytorch
+    elif args.device == "cuda":
+        import torch
+        torch.backends.cuda.matmul.allow_tf32 = False
+
     launch(
         main,
-        args.num_gpus,
+        # args.num_gpus,
+        1 if args.device == "cuda" else 0,
         num_machines=args.num_machines,
         machine_rank=args.machine_rank,
         dist_url=args.dist_url,
