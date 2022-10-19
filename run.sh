@@ -1,5 +1,6 @@
 pip install pycocotools==2.0.5 antlr4-python3-runtime==4.9.3
 python setup.py develop
+pip uninstall omegaconf
 
 ln -s /home2/pytorch-broad-models/COCO2017 datasets/coco
 
