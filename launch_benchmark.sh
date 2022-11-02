@@ -13,7 +13,7 @@ function main {
     python setup.py develop
     pip install omegaconf
 
-    ln -s ${dataset_dir} datasets/coco
+    ln -s ${DATASET_DIR} datasets/coco
 
     # if multiple use 'xxx,xxx,xxx'
     model_name_list=($(echo "${model_name}" |sed 's/,/ /g'))
@@ -28,7 +28,7 @@ function main {
             # clean workspace
             logs_path_clean
             # generate launch script for multiple instance
-            if [ "${OOB_USE_LAUNCHER}" == "1" ] && [ "${device}" != "cuda" ];then
+            if [ "${OOB_USE_LAUNCHER}" == "1" ] && [ "${device}" == "cpu" ];then
                 generate_core_launcher
             else
                 generate_core
@@ -54,19 +54,20 @@ function generate_core {
         log_file="${log_dir}/rcpi${real_cores_per_instance}-ins${i}.log"
 
         # instances
-        if [ "${device}" != "cuda" ];then
+        if [ "${device}" == "cpu" ];then
             OOB_EXEC_HEADER=" numactl -m $(echo ${device_array[i]} |awk -F ';' '{print $2}') "
             OOB_EXEC_HEADER+=" -C $(echo ${device_array[i]} |awk -F ';' '{print $1}') "
-        else
+        elif [ "${device}" == "cuda" ];then
             OOB_EXEC_HEADER=" CUDA_VISIBLE_DEVICES=${device_array[i]} "
+	    addtion_options=" --nv_fuser "
         fi
         printf " ${OOB_EXEC_HEADER} \
 	    python tools/train_net.py --config-file configs/Misc/cascade_mask_rcnn_R_50_FPN_1x.yaml \
-	    	--eval-only --jit --device ${device} \
+	    	--eval-only --jit --device ${device} --batch_size ${batch_size} \
 	    	--num_iter $num_iter --num_warmup $num_warmup \
 		--channels_last $channels_last --precision $precision \
                 ${addtion_options} \
-		MODEL.WEIGHTS ${ckpt_dir} \
+		MODEL.WEIGHTS ${CKPT_DIR} \
         > ${log_file} 2>&1 &  \n" |tee -a ${excute_cmd_file}
         if [ "${numa_nodes_use}" == "0" ];then
             break
