@@ -161,7 +161,6 @@ def inference_on_dataset(
                     try:
                         model = torch.jit.trace(model, inputs, check_trace=False)
                         print("---- JIT trace enable.")
-                        model = torch.jit.freeze(model)
                     except (RuntimeError, TypeError) as e:
                         print("---- JIT trace disable.")
                         print("failed to use PyTorch jit mode due to: ", e)
@@ -210,7 +209,6 @@ def inference_on_dataset(
                         try:
                             model = torch.jit.trace(model, inputs, check_trace=False)
                             print("---- JIT trace enable.")
-                            model = torch.jit.freeze(model)
                         except (RuntimeError, TypeError) as e:
                             print("---- JIT trace disable.")
                             print("failed to use PyTorch jit mode due to: ", e)
@@ -247,7 +245,6 @@ def inference_on_dataset(
                         try:
                             model = torch.jit.trace(model, inputs, check_trace=False)
                             print("---- JIT trace enable.")
-                            model = torch.jit.freeze(model)
                         except (RuntimeError, TypeError) as e:
                             print("---- JIT trace disable.")
                             print("failed to use PyTorch jit mode due to: ", e)
@@ -273,7 +270,6 @@ def inference_on_dataset(
                     try:
                         model = torch.jit.trace(model, inputs, check_trace=False)
                         print("---- JIT trace enable.")
-                        model = torch.jit.freeze(model)
                     except (RuntimeError, TypeError) as e:
                         print("---- JIT trace disable.")
                         print("failed to use PyTorch jit mode due to: ", e)
@@ -302,7 +298,6 @@ def inference_on_dataset(
                     try:
                         model = torch.jit.trace(model, inputs, check_trace=False)
                         print("---- JIT trace enable.")
-                        model = torch.jit.freeze(model)
                     except (RuntimeError, TypeError) as e:
                         print("---- JIT trace disable.")
                         print("failed to use PyTorch jit mode due to: ", e)
