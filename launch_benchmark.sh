@@ -10,7 +10,7 @@ function main {
 
     # requirements
     pip uninstall detectron2 -y
-    pip install timm==0.6.12
+    pip install timm==0.6.12 pillow==9.5.0
     pip install pycocotools==2.0.5 antlr4-python3-runtime==4.9.3
     python setup.py develop
     pip install omegaconf
